@@ -1,0 +1,15 @@
+# Set correct MIME types for worker files
+/*.ts
+  Content-Type: application/javascript
+
+# Set correct MIME types for JavaScript files
+/*.js
+  Content-Type: application/javascript
+
+/*.mjs
+  Content-Type: application/javascript
+
+# Set correct MIME types for other common files
+/*.wasm
+  Content-Type: application/wasm
+

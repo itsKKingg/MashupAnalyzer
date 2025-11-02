@@ -32,14 +32,39 @@ port: 5173,
 // Workers: classic format to allow importScripts in your worker
 worker: {
 format: 'iife',
+rollupOptions: {
+output: {
+entryFileNames: '[name]-[hash].js',
+}
+}
+},
+
+resolve: {
+alias: {
+buffer: 'buffer',
+},
+},
+
+define: {
+global: 'globalThis',
 },
 
 optimizeDeps: {
 exclude: ['essentia.js'],
+esbuildOptions: {
+define: {
+global: 'globalThis',
+},
+},
 },
 
 build: {
 target: 'esnext',
 sourcemap: true,
+rollupOptions: {
+output: {
+manualChunks: undefined,
+},
+},
 },
 });

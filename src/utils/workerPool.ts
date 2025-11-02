@@ -36,8 +36,8 @@ class AudioAnalysisWorkerPool {
 
       for (let i = 0; i < this.maxWorkers; i++) {
         try {
-          // ✅ FIXED: Force classic worker mode (allows importScripts)
-          const workerUrl = new URL('../workers/audioAnalysis.worker.ts', import.meta.url);
+          // ✅ FIXED: Import worker without extension to let Vite handle it properly
+          const workerUrl = new URL('../workers/audioAnalysis.worker', import.meta.url);
           const worker = new Worker(workerUrl, { type: 'classic' });
 
           const workerInstance: WorkerInstance = {

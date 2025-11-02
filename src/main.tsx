@@ -5,6 +5,11 @@ import App from './App';
 import './index.css';
 import { PlaybackProvider } from './contexts/PlaybackContext';
 
+// Add Buffer polyfill for music-metadata-browser
+import { Buffer } from 'buffer';
+(window as any).global = window;
+(window as any).Buffer = Buffer;
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <PlaybackProvider>
