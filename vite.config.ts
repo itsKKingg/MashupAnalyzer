@@ -31,12 +31,18 @@ port: 5173,
 
 // Workers: classic format to allow importScripts in your worker
 worker: {
-format: 'iife',
-rollupOptions: {
-output: {
-entryFileNames: '[name]-[hash].js',
-}
-}
+  format: 'iife',
+  plugins: () => [],
+  rollupOptions: {
+    output: {
+      entryFileNames: '[name]-[hash].js',
+      format: 'iife',
+    }
+  }
+},
+
+esbuild: {
+  target: 'es2015',
 },
 
 resolve: {
@@ -59,12 +65,12 @@ global: 'globalThis',
 },
 
 build: {
-target: 'esnext',
-sourcemap: true,
-rollupOptions: {
-output: {
-manualChunks: undefined,
-},
-},
+  target: 'es2015',
+  sourcemap: true,
+  rollupOptions: {
+    output: {
+      manualChunks: undefined,
+    },
+  },
 },
 });
