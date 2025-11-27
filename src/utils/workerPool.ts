@@ -3,8 +3,21 @@
 
 import type { AnalysisMode, SegmentDensity, BeatStorage, AudioAnalysisResult } from '../types/track';
 
+interface AnalysisPayload {
+  audioData: Float32Array;
+  sampleRate: number;
+  duration: number;
+  fileName: string;
+  options: {
+    mode: AnalysisMode;
+    segmentDensity: SegmentDensity;
+    beatStorage: BeatStorage;
+  };
+}
+
 interface WorkerTask {
   id: string;
+  payload: AnalysisPayload;
   resolve: (result: AudioAnalysisResult) => void;
   reject: (error: Error) => void;
   onProgress?: (progress: number, status?: string) => void;
@@ -52,13 +65,18 @@ class AudioAnalysisWorkerPool {
           this.workers.push(workerInstance);
 
           await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Worker init timeout')), 10000);
+            const timeout = setTimeout(() => reject(new Error('Worker init timeout')), 30000); // Increased for Cloudflare Pages
             
             const handler = (e: MessageEvent) => {
               if (e.data.type === 'loaded' || e.data.type === 'ready') {
                 clearTimeout(timeout);
                 worker.removeEventListener('message', handler);
                 resolve();
+              } else if (e.data.type === 'error') {
+                clearTimeout(timeout);
+                worker.removeEventListener('message', handler);
+                console.warn(`Worker ${i + 1} initialized with fallback mode:`, e.data.error);
+                resolve(); // Continue even with fallback
               }
             };
 
@@ -122,9 +140,37 @@ class AudioAnalysisWorkerPool {
 
     const task = this.queue.shift();
     if (!task) return;
+    
+    this.dispatchTask(availableWorker, task);
 
-    availableWorker.busy = true;
-    availableWorker.currentTask = task;
+    if (this.queue.length > 0) {
+      queueMicrotask(() => this.processQueue());
+    }
+  }
+
+  private dispatchTask(workerInstance: WorkerInstance, task: WorkerTask) {
+    workerInstance.busy = true;
+    workerInstance.currentTask = task;
+
+    const message = {
+      type: 'analyze',
+      id: task.id,
+      ...task.payload,
+    };
+
+    const transferables: Transferable[] = [];
+    if (task.payload.audioData?.buffer instanceof ArrayBuffer) {
+      transferables.push(task.payload.audioData.buffer);
+    }
+
+    try {
+      workerInstance.worker.postMessage(message, transferables);
+    } catch (error) {
+      console.error('Failed to dispatch task to worker:', error);
+      workerInstance.busy = false;
+      workerInstance.currentTask = null;
+      task.reject(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   async analyze(
@@ -148,8 +194,17 @@ class AudioAnalysisWorkerPool {
     return new Promise((resolve, reject) => {
       const taskId = `${Date.now()}-${Math.random()}`;
       
+      const payload: AnalysisPayload = {
+        audioData,
+        sampleRate,
+        duration,
+        fileName,
+        options,
+      };
+
       const task: WorkerTask = {
         id: taskId,
+        payload,
         resolve,
         reject,
         onProgress,
@@ -158,50 +213,10 @@ class AudioAnalysisWorkerPool {
       const availableWorker = this.workers.find(w => !w.busy);
 
       if (availableWorker) {
-        availableWorker.busy = true;
-        availableWorker.currentTask = task;
-
-        availableWorker.worker.postMessage({
-          type: 'analyze',
-          id: taskId,
-          audioData,
-          sampleRate,
-          duration,
-          fileName,
-          options,
-        });
+        this.dispatchTask(availableWorker, task);
       } else {
         this.queue.push(task);
-        
-        const checkQueue = () => {
-          const worker = this.workers.find(w => !w.busy);
-          if (worker && this.queue.includes(task)) {
-            const queueIndex = this.queue.indexOf(task);
-            if (queueIndex !== -1) {
-              this.queue.splice(queueIndex, 1);
-              worker.busy = true;
-              worker.currentTask = task;
-
-              worker.worker.postMessage({
-                type: 'analyze',
-                id: taskId,
-                audioData,
-                sampleRate,
-                duration,
-                fileName,
-                options,
-              });
-            }
-          }
-        };
-
-        const interval = setInterval(() => {
-          if (!this.queue.includes(task)) {
-            clearInterval(interval);
-            return;
-          }
-          checkQueue();
-        }, 100);
+        this.processQueue();
       }
     });
   }

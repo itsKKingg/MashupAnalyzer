@@ -5,9 +5,92 @@
 self.exports = {};
 self.module = { exports: {} };
 
+const workerUrl = (() => {
+  try {
+    return new URL(self.location.href);
+  } catch {
+    return null;
+  }
+})();
+
+const ESSENTIA_BASE_URL = (() => {
+  try {
+    if (!workerUrl) return '/essentia/';
+    return new URL('../essentia/', workerUrl).toString();
+  } catch {
+    return '/essentia/';
+  }
+})();
+
+function resolveEssentiaAsset(path) {
+  const cleanPath = String(path || '').replace(/^\/+/, '');
+  return new URL(cleanPath, ESSENTIA_BASE_URL).toString();
+}
+
+const FETCH_TIMEOUT_MS = 20000;
+
+async function fetchWithRetry(url, options = {}, retries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        cache: 'reload',
+        credentials: 'same-origin',
+        mode: 'same-origin',
+        ...options,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} for ${url}`);
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      clearTimeout(timer);
+      if (attempt === retries) break;
+      await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function instantiateEssentiaBinary(imports, receiveInstance) {
+  const wasmPath = resolveEssentiaAsset('essentia-wasm.umd.wasm');
+  const response = await fetchWithRetry(wasmPath, {
+    headers: { Accept: 'application/wasm' },
+  }, 2);
+
+  if (typeof WebAssembly.instantiateStreaming === 'function') {
+    try {
+      const streamingResult = await WebAssembly.instantiateStreaming(response.clone(), imports);
+      receiveInstance(streamingResult.instance);
+      return streamingResult.instance.exports;
+    } catch (streamError) {
+      console.warn('[Worker] instantiateStreaming failed, using ArrayBuffer fallback:', streamError.message);
+    }
+  }
+
+  const wasmBinary = await response.arrayBuffer();
+  const result = await WebAssembly.instantiate(wasmBinary, imports);
+  receiveInstance(result.instance);
+  return result.instance.exports;
+}
+
+function ensureFloat32Array(data) {
+  if (data instanceof Float32Array) return data;
+  if (data instanceof ArrayBuffer) return new Float32Array(data);
+  if (ArrayBuffer.isView(data)) return new Float32Array(data.buffer);
+  return new Float32Array(data || []);
+}
+
 // STEP 2: Load Essentia UMD builds
-importScripts('/essentia/essentia.js-extractor.umd.js');
-importScripts('/essentia/essentia-wasm.umd.js');
+importScripts(
+  resolveEssentiaAsset('essentia.js-extractor.umd.js'),
+  resolveEssentiaAsset('essentia-wasm.umd.js')
+);
 
 // STEP 3: Type declarations
 
@@ -27,10 +110,14 @@ const CONFIG = {
 
 let essentiaInstance = null;
 let isInitialized = false;
+let initializationAttempts = 0;
+const MAX_INIT_ATTEMPTS = 3;
 
 async function initializeEssentia() {
   if (isInitialized && essentiaInstance) return true;
 
+  initializationAttempts++;
+  
   try {
     const EssentiaClass = (self.module).exports;
     const WASMModule = (self).exports?.EssentiaWASM;
@@ -46,7 +133,8 @@ async function initializeEssentia() {
     let wasmModule;
     if (typeof WASMModule === 'function') {
       wasmModule = await WASMModule({
-        locateFile: (path) => `/essentia/${path}`,
+        locateFile: (path) => resolveEssentiaAsset(path),
+        instantiateWasm: instantiateEssentiaBinary,
       });
     } else {
       wasmModule = WASMModule;
@@ -54,12 +142,22 @@ async function initializeEssentia() {
     
     essentiaInstance = new EssentiaClass(wasmModule);
     
-    // Silent success - no logging
     isInitialized = true;
+    initializationAttempts = 0;
+    console.log('[Worker] ✅ Essentia initialized successfully');
     return true;
   } catch (error) {
-    console.error('[Worker] ❌ Essentia init failed:', error.message);
+    console.error(`[Worker] ❌ Essentia init failed (attempt ${initializationAttempts}/${MAX_INIT_ATTEMPTS}):`, error.message);
     isInitialized = false;
+    
+    // Retry with exponential backoff
+    if (initializationAttempts < MAX_INIT_ATTEMPTS) {
+      const delay = Math.pow(2, initializationAttempts) * 1000;
+      console.log(`[Worker] Retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return initializeEssentia();
+    }
+    
     return false;
   }
 }
@@ -205,14 +303,14 @@ function fallbackBPMDetection(signal, sampleRate) {
   };
 }
 
-function detectOnsets(signal, sampleRate)[] {
+function detectOnsets(signal, sampleRate) {
   const hopSize = CONFIG.ONSET_HOP_SIZE;
-  const onsets[] = [];
+  const onsets = [];
   const threshold = 0.01;
   const minGap = 0.1;
 
   let prevEnergy = 0;
-  const energyBuffer[] = [];
+  const energyBuffer = [];
   const maxEnergyBufferSize = 10;
 
   for (let i = 0; i < signal.length - hopSize; i += hopSize) {
@@ -394,6 +492,7 @@ function createSegments(signal, sampleRate, duration, bpm, key, avgEnergy) {
 
 async function analyzeAudio(msg) {
   const { audioData, sampleRate, duration, options, id } = msg;
+  const preparedAudio = ensureFloat32Array(audioData);
 
   const sendProgress = (progress, status) => {
     self.postMessage({
@@ -407,7 +506,7 @@ async function analyzeAudio(msg) {
   try {
     sendProgress(10, 'Preprocessing...');
     const { signal, analyzedDuration } = preprocessAudio(
-      audioData,
+      preparedAudio,
       sampleRate,
       duration,
       options.mode
