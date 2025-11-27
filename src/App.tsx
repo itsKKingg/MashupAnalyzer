@@ -20,6 +20,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { usePlayback } from './contexts/PlaybackContext';
 import { loadLibrary, clearLibrary, SavedLibrary } from './utils/localStorage';
 import { MashupCandidate } from './types/track';
+import { closeSharedAudioContext } from './utils/sharedAudioContext';
 
 function App() {
   const {
@@ -87,6 +88,12 @@ function App() {
       setShowRestoreBanner(true);
     }
   }, []);
+
+    useEffect(() => {
+      return () => {
+        closeSharedAudioContext();
+      };
+    }, []);
 
   // ✅ FIXED: Check if user is typing before triggering shortcuts
   const isTyping = () => {
