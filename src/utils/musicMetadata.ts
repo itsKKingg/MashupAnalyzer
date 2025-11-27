@@ -1,16 +1,18 @@
 // src/utils/musicMetadata.ts
 // ✅ FIXED: Extract metadata from audio files (now with dynamic imports)
 
-// ✅ FIXED: Dynamic import for code splitting
-let musicMetadataModule: typeof import('music-metadata-browser') | null = null;
+import { Buffer } from 'buffer';
 
-async function loadMusicMetadata(): Promise<typeof import('music-metadata-browser')> {
+// ✅ FIXED: Dynamic import for code splitting
+let musicMetadataModule: typeof import('music-metadata') | null = null;
+
+async function loadMusicMetadata(): Promise<typeof import('music-metadata')> {
   if (!musicMetadataModule) {
     try {
-      musicMetadataModule = await import('music-metadata-browser');
+      musicMetadataModule = await import('music-metadata');
       return musicMetadataModule;
     } catch (error) {
-      console.error('Failed to load music-metadata-browser:', error);
+      console.error('Failed to load music-metadata:', error);
       throw new Error('Metadata extraction failed to load. Please refresh the page.');
     }
   }
@@ -41,9 +43,11 @@ export interface ExtendedMetadata {
  */
 export async function extractMetadata(file: File): Promise<ExtendedMetadata> {
   try {
-    // ✅ FIXED: Dynamically load music-metadata-browser
-    const { parseBlob } = await loadMusicMetadata();
-    const metadata = await parseBlob(file);
+    // ✅ FIXED: Dynamically load music-metadata
+    const { parseBuffer } = await loadMusicMetadata();
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const metadata = await parseBuffer(buffer);
     
     const result: ExtendedMetadata = {
       title: metadata.common.title,
