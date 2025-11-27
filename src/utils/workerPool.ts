@@ -3,6 +3,26 @@
 
 import type { AnalysisMode, SegmentDensity, BeatStorage, AudioAnalysisResult } from '../types/track';
 
+const DEFAULT_MAX_WORKERS = 16;
+const CF_MAX_WORKERS = 4;
+const WORKER_READY_TIMEOUT_MS = 45000;
+const TASK_TIMEOUT_MS = 70000;
+const CF_HOST_REGEX = /\.(?:pages|workers)\.dev$/i;
+
+const detectCloudflarePages = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname || '';
+  if (CF_HOST_REGEX.test(host)) return true;
+  return Boolean((window as unknown as { __CF$cv$params?: unknown }).__CF$cv$params);
+};
+
+const getEnvWorkerOverride = (): number | null => {
+  const env = (import.meta.env?.VITE_MAX_WORKERS ?? import.meta.env?.VITE_WORKER_COUNT) as string | undefined;
+  if (!env) return null;
+  const parsed = Number(env);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
 interface AnalysisPayload {
   audioData: Float32Array;
   sampleRate: number;
@@ -27,6 +47,8 @@ interface WorkerInstance {
   worker: Worker;
   busy: boolean;
   currentTask: WorkerTask | null;
+  index: number;
+  timeoutHandle?: number;
 }
 
 class AudioAnalysisWorkerPool {
@@ -34,59 +56,36 @@ class AudioAnalysisWorkerPool {
   private queue: WorkerTask[] = [];
   private maxWorkers: number;
   private initPromise: Promise<void> | null = null;
+  private readonly isCloudflareEnv: boolean;
 
-  constructor(maxWorkers: number = 16) {  // 🔥 Changed from 4 to 8
-    const cores = navigator.hardwareConcurrency || 4;
-    this.maxWorkers = Math.min(maxWorkers, cores);
-    console.log(`🧵 Worker pool: ${this.maxWorkers} workers (${cores} cores available)`);
+  constructor(maxWorkers: number = DEFAULT_MAX_WORKERS) {
+    this.isCloudflareEnv = detectCloudflarePages();
+
+    const cores = typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency || 4) : 4;
+    const envOverride = getEnvWorkerOverride();
+
+    if (envOverride) {
+      this.maxWorkers = Math.max(1, Math.min(envOverride, maxWorkers, cores));
+    } else if (this.isCloudflareEnv) {
+      this.maxWorkers = Math.max(1, Math.min(CF_MAX_WORKERS, cores));
+    } else {
+      const safeDesktopCount = Math.max(1, cores - 1);
+      this.maxWorkers = Math.max(1, Math.min(maxWorkers, safeDesktopCount));
+    }
+
+    console.log(`🧵 Worker pool: ${this.maxWorkers} workers (${cores} cores available${this.isCloudflareEnv ? ' • Cloudflare safe mode' : ''})`);
   }
 
   async initialize(): Promise<void> {
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
-      console.log(`🧵 Initializing ${this.maxWorkers} workers...`);
+      console.log(`🧵 Initializing up to ${this.maxWorkers} workers...`);
 
       for (let i = 0; i < this.maxWorkers; i++) {
-        try {
-          // ✅ FIXED: Import worker without extension to let Vite handle it properly
-          const workerUrl = new URL('../workers/audioAnalysis.worker.js?worker', import.meta.url);
-          const worker = new Worker(workerUrl, { type: 'classic' });
-
-          const workerInstance: WorkerInstance = {
-            worker,
-            busy: false,
-            currentTask: null,
-          };
-
-          worker.onmessage = (e) => this.handleWorkerMessage(workerInstance, e);
-          worker.onerror = (e) => this.handleWorkerError(workerInstance, e);
-
+        const workerInstance = await this.spawnWorker(i);
+        if (workerInstance) {
           this.workers.push(workerInstance);
-
-          await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Worker init timeout')), 30000); // Increased for Cloudflare Pages
-            
-            const handler = (e: MessageEvent) => {
-              if (e.data.type === 'loaded' || e.data.type === 'ready') {
-                clearTimeout(timeout);
-                worker.removeEventListener('message', handler);
-                resolve();
-              } else if (e.data.type === 'error') {
-                clearTimeout(timeout);
-                worker.removeEventListener('message', handler);
-                console.warn(`Worker ${i + 1} initialized with fallback mode:`, e.data.error);
-                resolve(); // Continue even with fallback
-              }
-            };
-
-            worker.addEventListener('message', handler);
-            worker.postMessage({ type: 'init' });
-          });
-
-          console.log(`✅ Worker ${i + 1}/${this.maxWorkers} ready`);
-        } catch (error) {
-          console.error(`❌ Worker ${i + 1} failed to initialize:`, error);
         }
       }
 
@@ -96,37 +95,120 @@ class AudioAnalysisWorkerPool {
     return this.initPromise;
   }
 
-  private handleWorkerMessage(workerInstance: WorkerInstance, e: MessageEvent) {
-    const { type, id, result, error, progress, status } = e.data;
+  private async spawnWorker(index: number): Promise<WorkerInstance | null> {
+    try {
+      const workerUrl = new URL('../workers/audioAnalysis.worker.js?worker', import.meta.url);
+      const worker = new Worker(workerUrl, { type: 'classic' });
 
-    if (!workerInstance.currentTask) return;
+      const workerInstance: WorkerInstance = {
+        worker,
+        busy: false,
+        currentTask: null,
+        index,
+      };
+
+      worker.onmessage = (event) => this.handleWorkerMessage(workerInstance, event);
+      worker.onerror = (event) => this.handleWorkerError(workerInstance, event);
+
+      await this.awaitWorkerReady(worker, index);
+      console.log(`✅ Worker ${index + 1}/${this.maxWorkers} ready`);
+      return workerInstance;
+    } catch (error) {
+      console.error(`❌ Worker ${index + 1} failed to initialize:`, error);
+      return null;
+    }
+  }
+
+  private awaitWorkerReady(worker: Worker, index: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        worker.removeEventListener('message', handleMessage);
+      };
+
+      const timeoutId = window.setTimeout(() => {
+        cleanup();
+        reject(new Error(`Worker ${index + 1} init timeout`));
+      }, WORKER_READY_TIMEOUT_MS);
+
+      const handleMessage = (event: MessageEvent) => {
+        const { type, error } = event.data || {};
+        if (type === 'loaded' || type === 'ready') {
+          cleanup();
+          resolve();
+        } else if (type === 'error') {
+          console.warn(`Worker ${index + 1} initialized in fallback mode:`, error);
+          cleanup();
+          resolve();
+        }
+      };
+
+      worker.addEventListener('message', handleMessage);
+      worker.postMessage({ type: 'init' });
+    });
+  }
+
+  private handleWorkerMessage(workerInstance: WorkerInstance, event: MessageEvent) {
+    const { type, id, result, error, progress, status } = event.data || {};
+
+    if (type === 'progress' && workerInstance.currentTask) {
+      workerInstance.currentTask.onProgress?.(progress, status);
+      return;
+    }
+
+    if (!workerInstance.currentTask) {
+      return;
+    }
 
     switch (type) {
-      case 'progress':
-        workerInstance.currentTask.onProgress?.(progress, status);
-        break;
-
       case 'result':
+        this.clearTaskTimeout(workerInstance);
         workerInstance.currentTask.resolve(result);
         this.completeTask(workerInstance);
         break;
 
       case 'error':
-        workerInstance.currentTask.reject(new Error(error));
+        this.clearTaskTimeout(workerInstance);
+        workerInstance.currentTask.reject(new Error(error || 'Worker error'));
         this.completeTask(workerInstance);
+        this.restartWorker(workerInstance);
+        break;
+
+      default:
         break;
     }
   }
 
   private handleWorkerError(workerInstance: WorkerInstance, error: ErrorEvent) {
-    console.error('Worker error:', error);
+    console.error(`Worker ${workerInstance.index + 1} error:`, error.message);
     if (workerInstance.currentTask) {
       workerInstance.currentTask.reject(new Error(error.message));
       this.completeTask(workerInstance);
     }
+    this.restartWorker(workerInstance);
+  }
+
+  private startTaskTimeout(workerInstance: WorkerInstance) {
+    this.clearTaskTimeout(workerInstance);
+    workerInstance.timeoutHandle = window.setTimeout(() => {
+      console.warn(`Worker ${workerInstance.index + 1} exceeded ${TASK_TIMEOUT_MS}ms, restarting`);
+      if (workerInstance.currentTask) {
+        workerInstance.currentTask.reject(new Error('Analysis timed out'));
+        this.completeTask(workerInstance);
+      }
+      this.restartWorker(workerInstance);
+    }, TASK_TIMEOUT_MS);
+  }
+
+  private clearTaskTimeout(workerInstance: WorkerInstance) {
+    if (workerInstance.timeoutHandle) {
+      clearTimeout(workerInstance.timeoutHandle);
+      workerInstance.timeoutHandle = undefined;
+    }
   }
 
   private completeTask(workerInstance: WorkerInstance) {
+    this.clearTaskTimeout(workerInstance);
     workerInstance.busy = false;
     workerInstance.currentTask = null;
     this.processQueue();
@@ -135,7 +217,7 @@ class AudioAnalysisWorkerPool {
   private processQueue() {
     if (this.queue.length === 0) return;
 
-    const availableWorker = this.workers.find(w => !w.busy);
+    const availableWorker = this.workers.find(worker => !worker.busy);
     if (!availableWorker) return;
 
     const task = this.queue.shift();
@@ -165,11 +247,14 @@ class AudioAnalysisWorkerPool {
 
     try {
       workerInstance.worker.postMessage(message, transferables);
+      this.startTaskTimeout(workerInstance);
     } catch (error) {
       console.error('Failed to dispatch task to worker:', error);
       workerInstance.busy = false;
       workerInstance.currentTask = null;
+      this.clearTaskTimeout(workerInstance);
       task.reject(error instanceof Error ? error : new Error(String(error)));
+      this.restartWorker(workerInstance);
     }
   }
 
@@ -221,6 +306,31 @@ class AudioAnalysisWorkerPool {
     });
   }
 
+  private restartWorker(workerInstance: WorkerInstance) {
+    const index = this.workers.indexOf(workerInstance);
+    this.clearTaskTimeout(workerInstance);
+    workerInstance.worker.terminate();
+
+    if (index !== -1) {
+      this.workers.splice(index, 1);
+    }
+
+    void this.spawnWorker(workerInstance.index).then((replacement) => {
+      if (!replacement) {
+        console.warn(`⚠️ Unable to restart worker ${workerInstance.index + 1}`);
+        return;
+      }
+
+      if (index === -1 || index > this.workers.length) {
+        this.workers.push(replacement);
+      } else {
+        this.workers.splice(index, 0, replacement);
+      }
+
+      this.processQueue();
+    });
+  }
+
   getStats() {
     return {
       total: this.workers.length,
@@ -231,7 +341,10 @@ class AudioAnalysisWorkerPool {
   }
 
   terminate() {
-    this.workers.forEach(w => w.worker.terminate());
+    this.workers.forEach(workerInstance => {
+      this.clearTaskTimeout(workerInstance);
+      workerInstance.worker.terminate();
+    });
     this.workers = [];
     this.queue = [];
     this.initPromise = null;
@@ -241,7 +354,7 @@ class AudioAnalysisWorkerPool {
 
 let workerPool: AudioAnalysisWorkerPool | null = null;
 
-export function getWorkerPool(maxWorkers: number = 16): AudioAnalysisWorkerPool {  // 🔥 Changed from 4 to 8
+export function getWorkerPool(maxWorkers: number = DEFAULT_MAX_WORKERS): AudioAnalysisWorkerPool {
   if (!workerPool) {
     workerPool = new AudioAnalysisWorkerPool(maxWorkers);
   }

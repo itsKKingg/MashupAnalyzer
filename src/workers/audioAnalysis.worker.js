@@ -27,16 +27,16 @@ function resolveEssentiaAsset(path) {
   return new URL(cleanPath, ESSENTIA_BASE_URL).toString();
 }
 
-const FETCH_TIMEOUT_MS = 20000;
+const FETCH_TIMEOUT_MS = 30000; // Increased for Cloudflare Pages edge network
 
-async function fetchWithRetry(url, options = {}, retries = 2) {
+async function fetchWithRetry(url, options = {}, retries = 3) {
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
-        cache: 'reload',
+        cache: 'default', // Use browser cache on Cloudflare Pages
         credentials: 'same-origin',
         mode: 'same-origin',
         ...options,
@@ -50,8 +50,9 @@ async function fetchWithRetry(url, options = {}, retries = 2) {
     } catch (error) {
       lastError = error;
       clearTimeout(timer);
+      console.warn(`[Worker] Fetch attempt ${attempt + 1}/${retries + 1} failed:`, error.message);
       if (attempt === retries) break;
-      await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
     }
   }
   throw lastError;
@@ -59,23 +60,20 @@ async function fetchWithRetry(url, options = {}, retries = 2) {
 
 async function instantiateEssentiaBinary(imports, receiveInstance) {
   const wasmPath = resolveEssentiaAsset('essentia-wasm.umd.wasm');
+  console.log('[Worker] Loading WASM from:', wasmPath);
+  
   const response = await fetchWithRetry(wasmPath, {
     headers: { Accept: 'application/wasm' },
-  }, 2);
+  }, 3);
 
-  if (typeof WebAssembly.instantiateStreaming === 'function') {
-    try {
-      const streamingResult = await WebAssembly.instantiateStreaming(response.clone(), imports);
-      receiveInstance(streamingResult.instance);
-      return streamingResult.instance.exports;
-    } catch (streamError) {
-      console.warn('[Worker] instantiateStreaming failed, using ArrayBuffer fallback:', streamError.message);
-    }
-  }
-
+  // ALWAYS use ArrayBuffer fallback on Cloudflare Pages (instantiateStreaming can fail silently)
+  console.log('[Worker] Using ArrayBuffer instantiation (Cloudflare Pages compatible)');
   const wasmBinary = await response.arrayBuffer();
+  console.log('[Worker] WASM ArrayBuffer loaded, size:', wasmBinary.byteLength);
+  
   const result = await WebAssembly.instantiate(wasmBinary, imports);
   receiveInstance(result.instance);
+  console.log('[Worker] WASM instantiated successfully');
   return result.instance.exports;
 }
 
@@ -86,68 +84,114 @@ function ensureFloat32Array(data) {
   return new Float32Array(data || []);
 }
 
-// STEP 2: Load Essentia UMD builds
-importScripts(
-  resolveEssentiaAsset('essentia.js-extractor.umd.js'),
-  resolveEssentiaAsset('essentia-wasm.umd.js')
-);
+// STEP 2: Load Essentia UMD builds with error handling
+let scriptsLoaded = false;
+let scriptLoadError = null;
+
+try {
+  console.log('[Worker] Loading Essentia scripts...');
+  importScripts(
+    resolveEssentiaAsset('essentia.js-extractor.umd.js'),
+    resolveEssentiaAsset('essentia-wasm.umd.js')
+  );
+  scriptsLoaded = true;
+  console.log('[Worker] ✅ Essentia scripts loaded');
+} catch (error) {
+  scriptLoadError = error;
+  console.error('[Worker] ❌ Failed to load Essentia scripts:', error.message);
+}
 
 // STEP 3: Type declarations
 
 const CONFIG = {
-  TARGET_SAMPLE_RATE: 22050,     // Keep high quality
-  DURATION_QUICK: 15,             // Quick mode: 15s
-  DURATION_FULL: 30,              // 🔥 Full mode: 30s (was 90s)
-  DURATION_HIGH_PRECISION: 45,    // 🔥 High precision: 45s (was 120s)
+  TARGET_SAMPLE_RATE: 22050,
+  DURATION_QUICK: 15,
+  DURATION_FULL: 30,
+  DURATION_HIGH_PRECISION: 45,
   SEGMENT_SAMPLES: {
     light: 20000,
     standard: 15000,
     detailed: 5000,
   },
   ONSET_HOP_SIZE: 512,
-  MAX_SEGMENTS: 2,                // 🔥 Only 2 segments per track
+  MAX_SEGMENTS: 2,
 };
 
 let essentiaInstance = null;
 let isInitialized = false;
 let initializationAttempts = 0;
 const MAX_INIT_ATTEMPTS = 3;
+const INIT_TIMEOUT_MS = 45000; // 45s timeout for full initialization
 
 async function initializeEssentia() {
-  if (isInitialized && essentiaInstance) return true;
+  if (isInitialized && essentiaInstance) {
+    console.log('[Worker] Already initialized');
+    return true;
+  }
+
+  if (!scriptsLoaded) {
+    console.error('[Worker] Cannot initialize: scripts failed to load');
+    return false;
+  }
 
   initializationAttempts++;
+  console.log(`[Worker] Initializing Essentia (attempt ${initializationAttempts}/${MAX_INIT_ATTEMPTS})...`);
   
   try {
-    const EssentiaClass = (self.module).exports;
-    const WASMModule = (self).exports?.EssentiaWASM;
-    
-    if (typeof EssentiaClass !== 'function') {
-      throw new Error('EssentiaExtractor not found');
+    // Wrap initialization in a timeout promise
+    const initPromise = (async () => {
+      const EssentiaClass = (self.module).exports;
+      const WASMModule = (self).exports?.EssentiaWASM;
+      
+      if (typeof EssentiaClass !== 'function') {
+        throw new Error('EssentiaExtractor not found in module.exports');
+      }
+      
+      if (!WASMModule) {
+        throw new Error('EssentiaWASM not found in exports');
+      }
+      
+      console.log('[Worker] EssentiaExtractor and WASMModule found');
+      
+      let wasmModule;
+      if (typeof WASMModule === 'function') {
+        console.log('[Worker] Initializing WASM module...');
+        wasmModule = await WASMModule({
+          locateFile: (path) => {
+            const resolved = resolveEssentiaAsset(path);
+            console.log('[Worker] locateFile:', path, '->', resolved);
+            return resolved;
+          },
+          instantiateWasm: instantiateEssentiaBinary,
+        });
+        console.log('[Worker] WASM module initialized');
+      } else {
+        wasmModule = WASMModule;
+      }
+      
+      console.log('[Worker] Creating EssentiaExtractor instance...');
+      essentiaInstance = new EssentiaClass(wasmModule);
+      console.log('[Worker] EssentiaExtractor instance created');
+      
+      isInitialized = true;
+      initializationAttempts = 0;
+      return true;
+    })();
+
+    let initTimeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      initTimeoutId = setTimeout(() => reject(new Error('Essentia initialization timeout')), INIT_TIMEOUT_MS);
+    });
+
+    await Promise.race([initPromise, timeoutPromise]);
+    if (initTimeoutId) {
+      clearTimeout(initTimeoutId);
     }
     
-    if (!WASMModule) {
-      throw new Error('EssentiaWASM not found');
-    }
-    
-    let wasmModule;
-    if (typeof WASMModule === 'function') {
-      wasmModule = await WASMModule({
-        locateFile: (path) => resolveEssentiaAsset(path),
-        instantiateWasm: instantiateEssentiaBinary,
-      });
-    } else {
-      wasmModule = WASMModule;
-    }
-    
-    essentiaInstance = new EssentiaClass(wasmModule);
-    
-    isInitialized = true;
-    initializationAttempts = 0;
     console.log('[Worker] ✅ Essentia initialized successfully');
     return true;
   } catch (error) {
-    console.error(`[Worker] ❌ Essentia init failed (attempt ${initializationAttempts}/${MAX_INIT_ATTEMPTS}):`, error.message);
+    console.error(`[Worker] ❌ Essentia init failed (attempt ${initializationAttempts}/${MAX_INIT_ATTEMPTS}):`, error.message, error);
     isInitialized = false;
     
     // Retry with exponential backoff
@@ -158,6 +202,7 @@ async function initializeEssentia() {
       return initializeEssentia();
     }
     
+    console.error('[Worker] Max initialization attempts reached, giving up');
     return false;
   }
 }
@@ -490,6 +535,8 @@ function createSegments(signal, sampleRate, duration, bpm, key, avgEnergy) {
   return segments;
 }
 
+const ANALYSIS_TIMEOUT_MS = 60000; // 60s timeout per analysis task
+
 async function analyzeAudio(msg) {
   const { audioData, sampleRate, duration, options, id } = msg;
   const preparedAudio = ensureFloat32Array(audioData);
@@ -554,6 +601,7 @@ async function analyzeAudio(msg) {
     return result;
 
   } catch (error) {
+    console.error('[Worker] Analysis error:', error);
     throw new Error(`Analysis failed: ${error.message}`);
   }
 }
@@ -562,30 +610,59 @@ self.onmessage = async (e) => {
   const msg = e.data;
 
   if (msg.type === 'init') {
+    console.log('[Worker] Received init message');
     const success = await initializeEssentia();
     self.postMessage({
       type: success ? 'ready' : 'error',
       error: success ? undefined : 'Essentia not available, using fallback algorithms'
     });
+    console.log('[Worker] Init complete, success:', success);
     return;
   }
 
   if (msg.type === 'analyze') {
+    console.log('[Worker] Received analyze message for:', msg.fileName);
+    
+    // Wrap analysis in timeout
+    const analysisPromise = analyzeAudio(msg);
+    let analysisTimeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      analysisTimeoutId = setTimeout(() => reject(new Error('Analysis timeout exceeded')), ANALYSIS_TIMEOUT_MS);
+    });
+
     try {
-      const result = await analyzeAudio(msg);
+      const result = await Promise.race([analysisPromise, timeoutPromise]);
+      if (analysisTimeoutId) {
+        clearTimeout(analysisTimeoutId);
+      }
+      console.log('[Worker] Analysis complete for:', msg.fileName);
       self.postMessage({
         type: 'result',
         id: msg.id,
         result
       });
     } catch (error) {
+      if (analysisTimeoutId) {
+        clearTimeout(analysisTimeoutId);
+      }
+      console.error('[Worker] Analysis failed for:', msg.fileName, error);
       self.postMessage({
         type: 'error',
         id: msg.id,
-        error: error.message
+        error: error.message || String(error)
       });
     }
   }
 };
 
-self.postMessage({ type: 'loaded' });
+// Only send 'loaded' after scripts are successfully loaded
+if (scriptsLoaded) {
+  console.log('[Worker] Worker ready, sending loaded message');
+  self.postMessage({ type: 'loaded' });
+} else {
+  console.error('[Worker] Worker failed to load, sending error message');
+  self.postMessage({ 
+    type: 'error', 
+    error: scriptLoadError ? scriptLoadError.message : 'Failed to load Essentia scripts'
+  });
+}

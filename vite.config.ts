@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  assetsInclude: ['**/*.wasm'],
 
   // Bind dev server and HMR to 127.0.0.1:5173
   server: {
@@ -24,6 +25,7 @@ export default defineConfig({
     headers: {
       'Cross-Origin-Embedder-Policy': 'require-corp',
       'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Resource-Policy': 'same-origin',
     },
   },
 
@@ -34,6 +36,7 @@ export default defineConfig({
     headers: {
       'Cross-Origin-Embedder-Policy': 'require-corp',
       'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Resource-Policy': 'same-origin',
     },
   },
 
@@ -43,9 +46,11 @@ export default defineConfig({
     plugins: () => [],
     rollupOptions: {
       output: {
-        entryFileNames: '[name]-[hash].js',
         format: 'iife',
         inlineDynamicImports: false,
+        entryFileNames: 'assets/[name]-[hash].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash][extname]'
       }
     }
   },
@@ -78,8 +83,13 @@ export default defineConfig({
     target: 'es2020',
     sourcemap: true,
     assetsInlineLimit: 0,
+    modulePreload: {
+      polyfill: false,
+    },
     rollupOptions: {
       output: {
+        entryFileNames: 'assets/[name]-[hash].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
         manualChunks: undefined,
         assetFileNames: (assetInfo) => {
           const name = assetInfo.name || '';
