@@ -5,7 +5,7 @@ import App from './App';
 import './index.css';
 import { PlaybackProvider } from './contexts/PlaybackContext';
 
-// Add Buffer polyfill for music-metadata-browser
+// Add Buffer polyfill for music-metadata
 import { Buffer } from 'buffer';
 (window as any).global = window;
 (window as any).Buffer = Buffer;
