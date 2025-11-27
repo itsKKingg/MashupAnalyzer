@@ -37,7 +37,7 @@ class AudioAnalysisWorkerPool {
       for (let i = 0; i < this.maxWorkers; i++) {
         try {
           // ✅ FIXED: Import worker without extension to let Vite handle it properly
-          const workerUrl = new URL('../workers/audioAnalysis.worker', import.meta.url);
+          const workerUrl = new URL('../workers/audioAnalysis.worker.js?worker', import.meta.url);
           const worker = new Worker(workerUrl, { type: 'classic' });
 
           const workerInstance: WorkerInstance = {

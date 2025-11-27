@@ -10,8 +10,6 @@ importScripts('/essentia/essentia.js-extractor.umd.js');
 importScripts('/essentia/essentia-wasm.umd.js');
 
 // STEP 3: Type declarations
-declare const Essentia: any;
-declare const EssentiaWASM: any;
 
 const CONFIG = {
   TARGET_SAMPLE_RATE: 22050,     // Keep high quality
@@ -27,15 +25,15 @@ const CONFIG = {
   MAX_SEGMENTS: 2,                // 🔥 Only 2 segments per track
 };
 
-let essentiaInstance: any = null;
+let essentiaInstance = null;
 let isInitialized = false;
 
 async function initializeEssentia() {
   if (isInitialized && essentiaInstance) return true;
 
   try {
-    const EssentiaClass = (self.module as any).exports;
-    const WASMModule = (self as any).exports?.EssentiaWASM;
+    const EssentiaClass = (self.module).exports;
+    const WASMModule = (self).exports?.EssentiaWASM;
     
     if (typeof EssentiaClass !== 'function') {
       throw new Error('EssentiaExtractor not found');
@@ -48,7 +46,7 @@ async function initializeEssentia() {
     let wasmModule;
     if (typeof WASMModule === 'function') {
       wasmModule = await WASMModule({
-        locateFile: (path: string) => `/essentia/${path}`,
+        locateFile: (path) => `/essentia/${path}`,
       });
     } else {
       wasmModule = WASMModule;
@@ -59,14 +57,14 @@ async function initializeEssentia() {
     // Silent success - no logging
     isInitialized = true;
     return true;
-  } catch (error: any) {
+  } catch (error) {
     console.error('[Worker] ❌ Essentia init failed:', error.message);
     isInitialized = false;
     return false;
   }
 }
 
-function preprocessAudio(audioData: Float32Array, originalSampleRate: number, originalDuration: number, mode: string) {
+function preprocessAudio(audioData, originalSampleRate, originalDuration, mode) {
   let maxDuration;
   let startOffset = 0;
 
@@ -102,7 +100,7 @@ function preprocessAudio(audioData: Float32Array, originalSampleRate: number, or
   return { signal, analyzedDuration };
 }
 
-function downsample(buffer: Float32Array, fromRate: number, toRate: number): Float32Array {
+function downsample(buffer, fromRate, toRate) {
   if (fromRate === toRate) return buffer;
 
   const ratio = fromRate / toRate;
@@ -116,7 +114,7 @@ function downsample(buffer: Float32Array, fromRate: number, toRate: number): Flo
   return result;
 }
 
-function getBeatCount(vector: any): number {
+function getBeatCount(vector) {
   if (!vector) return 0;
   if (Array.isArray(vector)) return vector.length;
   if (typeof vector.length === 'number') return vector.length;
@@ -124,7 +122,7 @@ function getBeatCount(vector: any): number {
   return 0;
 }
 
-function analyzeRhythm(signal: Float32Array, sampleRate: number) {
+function analyzeRhythm(signal, sampleRate) {
   if (!essentiaInstance || typeof essentiaInstance.RhythmExtractor2013 !== 'function') {
     return fallbackBPMDetection(signal, sampleRate);
   }
@@ -155,14 +153,14 @@ function analyzeRhythm(signal: Float32Array, sampleRate: number) {
         };
       }
     }
-  } catch (error: any) {
+  } catch (error) {
     // Silent fallback
   }
 
   return fallbackBPMDetection(signal, sampleRate);
 }
 
-function fallbackBPMDetection(signal: Float32Array, sampleRate: number) {
+function fallbackBPMDetection(signal, sampleRate) {
   const onsets = detectOnsets(signal, sampleRate);
 
   if (onsets.length < 4) {
@@ -207,14 +205,14 @@ function fallbackBPMDetection(signal: Float32Array, sampleRate: number) {
   };
 }
 
-function detectOnsets(signal: Float32Array, sampleRate: number): number[] {
+function detectOnsets(signal, sampleRate)[] {
   const hopSize = CONFIG.ONSET_HOP_SIZE;
-  const onsets: number[] = [];
+  const onsets[] = [];
   const threshold = 0.01;
   const minGap = 0.1;
 
   let prevEnergy = 0;
-  const energyBuffer: number[] = [];
+  const energyBuffer[] = [];
   const maxEnergyBufferSize = 10;
 
   for (let i = 0; i < signal.length - hopSize; i += hopSize) {
@@ -245,7 +243,7 @@ function detectOnsets(signal: Float32Array, sampleRate: number): number[] {
   return onsets;
 }
 
-function analyzeKey(signal: Float32Array) {
+function analyzeKey(signal) {
   if (!essentiaInstance) {
     return { key: 'C', confidence: 0, scale: 'major' };
   }
@@ -300,14 +298,14 @@ function analyzeKey(signal: Float32Array) {
         continue;
       }
     }
-  } catch (error: any) {
+  } catch (error) {
     // Silent fail
   }
 
   return { key: 'C', confidence: 0, scale: 'major' };
 }
 
-function analyzeSpectralFeatures(signal: Float32Array, sampleRate: number) {
+function analyzeSpectralFeatures(signal, sampleRate) {
   const rms = Math.sqrt(
     signal.reduce((sum, val) => sum + val * val, 0) / signal.length
   );
@@ -321,7 +319,7 @@ function analyzeSpectralFeatures(signal: Float32Array, sampleRate: number) {
   };
 }
 
-function estimateSpectralCentroid(signal: Float32Array, sampleRate: number): number {
+function estimateSpectralCentroid(signal, sampleRate) {
   let weightedSum = 0;
   let sum = 0;
 
@@ -337,7 +335,7 @@ function estimateSpectralCentroid(signal: Float32Array, sampleRate: number): num
   return sum > 0 ? weightedSum / sum : 1000;
 }
 
-function calculateRhythmicFeatures(beatCount: number, duration: number) {
+function calculateRhythmicFeatures(beatCount, duration) {
   if (beatCount < 2) {
     return {
       danceability: 0.5,
@@ -358,7 +356,7 @@ function calculateRhythmicFeatures(beatCount: number, duration: number) {
   };
 }
 
-function createSegments(signal: Float32Array, sampleRate: number, duration: number, bpm: number, key: string, avgEnergy: number) {
+function createSegments(signal, sampleRate, duration, bpm, key, avgEnergy) {
   const segmentDuration = duration / CONFIG.MAX_SEGMENTS;
   const segments = [];
 
@@ -394,10 +392,10 @@ function createSegments(signal: Float32Array, sampleRate: number, duration: numb
   return segments;
 }
 
-async function analyzeAudio(msg: any) {
+async function analyzeAudio(msg) {
   const { audioData, sampleRate, duration, options, id } = msg;
 
-  const sendProgress = (progress: number, status: string) => {
+  const sendProgress = (progress, status) => {
     self.postMessage({
       type: 'progress',
       id,
@@ -456,7 +454,7 @@ async function analyzeAudio(msg: any) {
     sendProgress(100, 'Complete!');
     return result;
 
-  } catch (error: any) {
+  } catch (error) {
     throw new Error(`Analysis failed: ${error.message}`);
   }
 }
@@ -481,7 +479,7 @@ self.onmessage = async (e) => {
         id: msg.id,
         result
       });
-    } catch (error: any) {
+    } catch (error) {
       self.postMessage({
         type: 'error',
         id: msg.id,
