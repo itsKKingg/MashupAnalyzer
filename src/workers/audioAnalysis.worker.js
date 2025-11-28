@@ -33,7 +33,7 @@ async function initializeEssentia() {
 
   try {
     const EssentiaClass = (self.module).exports;
-    const WASMModule = (self).exports?.EssentiaWASM;
+    const WASMModule = (self).exports && (self).exports.EssentiaWASM;
     
     if (typeof EssentiaClass !== 'function') {
       throw new Error('EssentiaExtractor not found');
@@ -205,14 +205,14 @@ function fallbackBPMDetection(signal, sampleRate) {
   };
 }
 
-function detectOnsets(signal, sampleRate)[] {
+function detectOnsets(signal, sampleRate) {
   const hopSize = CONFIG.ONSET_HOP_SIZE;
-  const onsets[] = [];
+  const onsets = [];
   const threshold = 0.01;
   const minGap = 0.1;
 
   let prevEnergy = 0;
-  const energyBuffer[] = [];
+  const energyBuffer = [];
   const maxEnergyBufferSize = 10;
 
   for (let i = 0; i < signal.length - hopSize; i += hopSize) {
