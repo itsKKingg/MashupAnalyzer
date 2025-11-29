@@ -7,7 +7,7 @@ let content = fs.readFileSync(workerPath, 'utf8');
 
 // Fix the syntax errors
 const fixedContent = content
-  .replace(/function\s+(\w+)\([^)]*\)\s*\[\s*\]\s*\{/g, 'function $1($2) {')
+  .replace(/function\s+(\w+)\(([^)]*)\)\s*\[\s*\]\s*\{/g, (match, p1, p2) => `function ${p1}(${p2}) {`)
   .replace(/const\s+(\w+)\s*\[\s*\]\s*=/g, 'const $1 =')
   .replace(/let\s+(\w+)\s*\[\s*\]\s*=/g, 'let $1 =')
   .replace(/var\s+(\w+)\s*\[\s*\]\s*=/g, 'var $1 =');
