@@ -2,8 +2,22 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+// Custom plugin to process worker files through esbuild
+function workerTranspiler() {
+  return {
+    name: 'worker-transpiler',
+    async load(id) {
+      if (id.includes('.worker.js')) {
+        // Let Vite handle the worker file normally
+        return null;
+      }
+      return null;
+    }
+  };
+}
+
 export default defineConfig({
-plugins: [react()],
+  plugins: [react(), workerTranspiler()],
 
 // Bind dev server and HMR to 127.0.0.1:5173
 server: {
@@ -29,26 +43,22 @@ host: '127.0.0.1',
 port: 5173,
 },
 
-// Workers: classic format to allow importScripts in your worker
+// Workers: classic format to allow importScripts, but ensure proper transpilation
 worker: {
   format: 'iife',
-  plugins: () => [],
   rollupOptions: {
     output: {
       entryFileNames: '[name]-[hash].js',
       format: 'iife',
     }
-  }
-},
-
-esbuild: {
-  target: 'es2015',
+  },
+  plugins: () => []
 },
 
 resolve: {
-alias: {
-buffer: 'buffer',
-},
+  alias: {
+    buffer: 'buffer',
+  },
 },
 
 define: {
