@@ -43,6 +43,7 @@ worker: {
 
 esbuild: {
   target: 'es2015',
+  minify: false,
 },
 
 resolve: {
