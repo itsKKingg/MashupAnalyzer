@@ -1,15 +1,42 @@
-# Set correct MIME types for worker files
-/*.ts
-  Content-Type: application/javascript
+# Global security headers for WASM-powered workers
+/*
+  X-Content-Type-Options: nosniff
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
 
-# Set correct MIME types for JavaScript files
+# Essentia JavaScript UMD modules (must come before generic /*.js)
+/essentia/*.js
+  Content-Type: application/javascript; charset=utf-8
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+  X-Content-Type-Options: nosniff
+
+# Essentia WASM files
+/essentia/*.wasm
+  Content-Type: application/wasm
+  Cache-Control: public, max-age=31536000, immutable, no-transform
+  Accept-Ranges: bytes
+  X-Content-Type-Options: nosniff
+  Access-Control-Allow-Origin: *
+
+# Ensure JavaScript bundles keep the correct MIME type and caching
 /*.js
-  Content-Type: application/javascript
+  Content-Type: application/javascript; charset=utf-8
+  Cache-Control: public, max-age=31536000, immutable
 
 /*.mjs
-  Content-Type: application/javascript
+  Content-Type: application/javascript; charset=utf-8
+  Cache-Control: public, max-age=31536000, immutable
 
-# Set correct MIME types for other common files
+# Default WASM fallback (hashed assets in /assets)
 /*.wasm
   Content-Type: application/wasm
+  Cache-Control: public, max-age=31536000, immutable, no-transform
+  Accept-Ranges: bytes
+  X-Content-Type-Options: nosniff
 
+# Worker bundles emitted by Vite (classic workers)
+/assets/*worker*.js
+  Content-Type: application/javascript; charset=utf-8
+  Cache-Control: public, max-age=31536000, immutable
