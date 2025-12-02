@@ -207,17 +207,42 @@ export function useTrackLibrary() {
     });
   }, []);
 
-  // ✅ ADDED: Stuck state detection
+  // ✅ ADDED: Enhanced stuck state detection with recovery
   useEffect(() => {
     const analyzingTracks = tracks.filter((t) => t && t.isAnalyzing);
     
     if (analyzingTracks.length > 0 && !isProcessing && uploadQueue.length === 0) {
       console.warn('⚠️ Detected stuck analyzing state:', analyzingTracks.length, 'tracks');
+      console.warn('🔍 Analyzing tracks:', analyzingTracks.map(t => t?.name).filter(Boolean));
       
       const timer = setTimeout(() => {
         console.log('🔧 Auto-clearing stuck analyzing states...');
-        cancelAnalysis();
-      }, 5000);
+        
+        // Clear stuck tracks and provide detailed error information
+        setTracks((prev) => {
+          const validPrev = filterValidTracks(prev);
+          return validPrev.map((t) => {
+            if (t && t.isAnalyzing) {
+              console.error(`❌ Clearing stuck track: ${t.name}`);
+              return {
+                ...t,
+                isAnalyzing: false,
+                error: 'Analysis stuck - worker may have crashed. Please try re-uploading this file.'
+              };
+            }
+            return t;
+          });
+        });
+        
+        setIsProcessing(false);
+        setHasUnsavedChanges(true);
+        
+        // Optionally restart worker pool after stuck detection
+        setTimeout(() => {
+          console.log('🔄 Restarting worker pool after stuck detection...');
+          terminateWorkerPool();
+        }, 1000);
+      }, 10000); // Increased from 5s to 10s for deployed environments
 
       return () => clearTimeout(timer);
     }
@@ -448,6 +473,15 @@ export function useTrackLibrary() {
 
         if (typeof analysis.key !== 'string' || !analysis.key) {
           throw new Error('Analysis missing Key');
+        }
+
+        // Additional validation for deployed environments
+        if (analysis.bpm <= 0 || analysis.bpm > 300) {
+          throw new Error(`Invalid BPM detected: ${analysis.bpm}`);
+        }
+
+        if (!['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].some(k => analysis.key.startsWith(k))) {
+          throw new Error(`Invalid key detected: ${analysis.key}`);
         }
 
         setTracks((prev) => {
