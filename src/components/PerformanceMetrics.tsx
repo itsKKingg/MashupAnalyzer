@@ -1,18 +1,30 @@
 // src/components/PerformanceMetrics.tsx
 import { useState, useEffect } from 'react';
-import { Activity, Download, RotateCcw, Eye, EyeOff } from 'lucide-react';
+import { Activity, Download, RotateCcw, Eye, EyeOff, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react';
 import { getPerformanceProfiler, resetPerformanceProfiler, AggregatedMetrics } from '../utils/performanceProfiler';
+import { getWorkerPool, terminateWorkerPool } from '../utils/workerPool';
 
 export function PerformanceMetrics() {
   const [metrics, setMetrics] = useState<AggregatedMetrics | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isEnabled, setIsEnabled] = useState(true);
+  const [workerStats, setWorkerStats] = useState<any>(null);
 
   const refreshMetrics = () => {
     const profiler = getPerformanceProfiler();
     const agg = profiler.getAggregatedMetrics();
     setMetrics(agg);
     setIsEnabled(profiler.isEnabled());
+    
+    // Get worker pool stats
+    try {
+      const workerPool = getWorkerPool();
+      const stats = workerPool?.getStats();
+      setWorkerStats(stats);
+    } catch (e) {
+      // Worker pool might not be initialized
+      setWorkerStats(null);
+    }
   };
 
   useEffect(() => {
@@ -42,6 +54,16 @@ export function PerformanceMetrics() {
     const profiler = getPerformanceProfiler();
     profiler.setEnabled(!isEnabled);
     setIsEnabled(!isEnabled);
+  };
+
+  const handleRestartWorkers = () => {
+    console.log('🔄 Manually restarting worker pool...');
+    terminateWorkerPool();
+    
+    // Force re-initialization by triggering a refresh
+    setTimeout(() => {
+      refreshMetrics();
+    }, 1000);
   };
 
   if (!metrics || metrics.totalFiles === 0) {
@@ -87,6 +109,13 @@ export function PerformanceMetrics() {
             title={isEnabled ? 'Disable profiling' : 'Enable profiling'}
           >
             {isEnabled ? <Eye size={18} className="text-green-600" /> : <EyeOff size={18} className="text-gray-400" />}
+          </button>
+          <button
+            onClick={handleRestartWorkers}
+            className="p-2 hover:bg-white/50 dark:hover:bg-gray-800/50 rounded-lg transition-colors"
+            title="Restart workers"
+          >
+            <RefreshCw size={18} />
           </button>
           <button
             onClick={handleReset}
@@ -145,6 +174,21 @@ export function PerformanceMetrics() {
           <div className="text-xs text-orange-600 dark:text-orange-400">
             {metrics.avgWorkerUtilization.toFixed(0)}% avg util
           </div>
+          {workerStats && (
+            <div className="mt-1">
+              {workerStats.unhealthy > 0 ? (
+                <div className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
+                  <AlertTriangle size={12} />
+                  {workerStats.unhealthy} unhealthy
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                  <CheckCircle size={12} />
+                  All healthy
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -195,6 +239,50 @@ export function PerformanceMetrics() {
               <div className="text-[10px] break-all">UA: {metrics.userAgent}</div>
             </div>
           </div>
+
+          {/* Worker Health Details */}
+          {workerStats && (
+            <div className="bg-white/50 dark:bg-gray-800/50 rounded-lg p-3">
+              <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Worker Health</h4>
+              <div className="text-xs text-gray-600 dark:text-gray-400 space-y-1">
+                <div>Total Workers: <span className="font-medium">{workerStats.total}</span></div>
+                <div>Healthy: <span className="font-medium text-green-600">{workerStats.healthy}</span></div>
+                <div>Busy: <span className="font-medium text-blue-600">{workerStats.busy}</span></div>
+                <div>Available: <span className="font-medium text-green-600">{workerStats.available}</span></div>
+                <div>Queued Tasks: <span className="font-medium text-orange-600">{workerStats.queued}</span></div>
+                <div>Total Tasks Processed: <span className="font-medium">{workerStats.totalTasks}</span></div>
+                <div>Avg Restarts: <span className="font-medium">{workerStats.avgRestarts}</span></div>
+                
+                {workerStats.workers && workerStats.workers.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+                    <div className="font-medium mb-1">Individual Workers:</div>
+                    {workerStats.workers.map((worker: any, i: number) => (
+                      <div key={i} className="flex justify-between items-center py-1">
+                        <span>Worker {worker.index}:</span>
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded text-xs ${
+                            worker.healthy 
+                              ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' 
+                              : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+                          }`}>
+                            {worker.healthy ? 'Healthy' : 'Unhealthy'}
+                          </span>
+                          {worker.busy && (
+                            <span className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
+                              Busy
+                            </span>
+                          )}
+                          <span className="text-gray-500">
+                            {worker.tasks} tasks, {worker.restarts} restarts
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

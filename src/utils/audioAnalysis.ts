@@ -12,6 +12,8 @@ const CONFIG = {
   USE_WORKERS: true,
   MAX_WORKERS: 4,
   DEBUG: true,
+  WORKER_RETRY_ATTEMPTS: 2,
+  FALLBACK_TIMEOUT: 120000, // 2 minutes
 };
 
 const performanceMetrics = {

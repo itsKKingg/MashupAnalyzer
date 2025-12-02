@@ -28,6 +28,8 @@ const CONFIG = {
 let essentiaInstance = null;
 let isInitialized = false;
 let wasmInitTime = 0;
+let analysisCount = 0;
+const MAX_ANALYSES_PER_WORKER = 50; // Restart after N analyses to prevent memory leaks
 
 async function initializeEssentia() {
   if (isInitialized && essentiaInstance) return true;
@@ -35,6 +37,16 @@ async function initializeEssentia() {
   const initStart = performance.now();
   
   try {
+    // Clean up previous instance if it exists
+    if (essentiaInstance && typeof essentiaInstance.delete === 'function') {
+      try {
+        essentiaInstance.delete();
+        console.log('[Worker] 🧹 Cleaned up previous Essentia instance');
+      } catch (e) {
+        console.warn('[Worker] ⚠️ Could not clean up previous instance:', e);
+      }
+    }
+    
     const EssentiaClass = (self.module).exports;
     const WASMModule = (self).exports && (self).exports.EssentiaWASM;
     
@@ -64,6 +76,7 @@ async function initializeEssentia() {
   } catch (error) {
     console.error('[Worker] ❌ Essentia init failed:', error.message);
     isInitialized = false;
+    essentiaInstance = null;
     return false;
   }
 }
@@ -124,6 +137,19 @@ function getBeatCount(vector) {
   if (typeof vector.length === 'number') return vector.length;
   if (typeof vector.size === 'function') return vector.size();
   return 0;
+}
+
+function cleanupMemory() {
+  // Force garbage collection if available
+  if (typeof self.gc === 'function') {
+    self.gc();
+    console.log('[Worker] 🧹 Forced garbage collection');
+  }
+  
+  // Clear any large arrays or objects
+  if (typeof self.clearLargeBuffers === 'function') {
+    self.clearLargeBuffers();
+  }
 }
 
 function analyzeRhythm(signal, sampleRate) {
@@ -399,6 +425,9 @@ function createSegments(signal, sampleRate, duration, bpm, key, avgEnergy) {
 async function analyzeAudio(msg) {
   const { audioData, sampleRate, duration, options, id } = msg;
   
+  // Increment analysis count
+  analysisCount++;
+  
   // Performance profiling
   const perfStart = performance.now();
   const perfTimings = {
@@ -420,6 +449,11 @@ async function analyzeAudio(msg) {
   };
 
   try {
+    // Check if we've reached the analysis limit
+    if (analysisCount > MAX_ANALYSES_PER_WORKER) {
+      throw new Error(`Worker analysis limit reached (${MAX_ANALYSES_PER_WORKER}). Please restart worker.`);
+    }
+
     sendProgress(10, 'Preprocessing...');
     const preprocessStart = performance.now();
     const { signal, analyzedDuration } = preprocessAudio(
@@ -463,6 +497,9 @@ async function analyzeAudio(msg) {
     // Log performance breakdown
     console.log(`[Worker] ⏱️  Analysis breakdown: preprocess=${perfTimings.preprocess.toFixed(0)}ms, rhythm=${perfTimings.rhythm.toFixed(0)}ms, key=${perfTimings.key.toFixed(0)}ms, spectral=${perfTimings.spectral.toFixed(0)}ms, total=${perfTimings.total.toFixed(0)}ms`);
 
+    // Memory cleanup after successful analysis
+    cleanupMemory();
+
     const result = {
       bpm: rhythmData.bpm,
       key: keyData.key,
@@ -481,12 +518,18 @@ async function analyzeAudio(msg) {
       // Include performance metrics
       performanceTimings: perfTimings,
       wasmInitTime,
+      analysisCount,
     };
 
     sendProgress(100, 'Complete!');
     return result;
 
   } catch (error) {
+    console.error(`[Worker] ❌ Analysis failed:`, error.message, error.stack);
+    
+    // Memory cleanup after error
+    cleanupMemory();
+    
     throw new Error(`Analysis failed: ${error.message}`);
   }
 }
@@ -512,12 +555,31 @@ self.onmessage = async (e) => {
         result
       });
     } catch (error) {
+      console.error(`[Worker] ❌ Task ${msg.id} failed:`, error.message);
       self.postMessage({
         type: 'error',
         id: msg.id,
         error: error.message
       });
     }
+  }
+  
+  if (msg.type === 'terminate') {
+    console.log('[Worker] 🛑 Termination requested, cleaning up...');
+    cleanupMemory();
+    
+    // Clean up Essentia instance
+    if (essentiaInstance && typeof essentiaInstance.delete === 'function') {
+      try {
+        essentiaInstance.delete();
+        console.log('[Worker] 🧹 Essentia instance cleaned up');
+      } catch (e) {
+        console.warn('[Worker] ⚠️ Could not clean up Essentia instance:', e);
+      }
+    }
+    
+    self.postMessage({ type: 'terminated' });
+    self.close();
   }
 };
 
