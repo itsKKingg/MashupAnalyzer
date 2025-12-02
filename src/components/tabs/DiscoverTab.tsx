@@ -249,7 +249,7 @@ export function DiscoverTab({
           return b.perfectMatchScore - a.perfectMatchScore;
         });
       
-      case 'key-first':
+      case 'key-first': {
         // Sort by harmonic tier (tier-1 first), then by BPM difference
         const tierOrder = { 'tier-1': 0, 'tier-2': 1, 'tier-3': 2, 'tier-4': 3, 'tier-5': 4, 'tier-6': 5 };
         return sorted.sort((a, b) => {
@@ -257,6 +257,7 @@ export function DiscoverTab({
           if (tierDiff !== 0) return tierDiff;
           return a.bpmDifference - b.bpmDifference;
         });
+      }
       
       case 'score':
         // Traditional compatibility score
@@ -439,39 +440,39 @@ export function DiscoverTab({
               )}
 
               {/* Info Cards */}
-              <div className="grid md:grid-cols-3 gap-4 mt-8">
-                <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 md:mt-8">
+                <div className="bg-white dark:bg-gray-800 rounded-xl p-4 md:p-6 border border-gray-200 dark:border-gray-700">
                   <div className="w-10 h-10 bg-purple-100 dark:bg-purple-900/30 rounded-lg flex items-center justify-center mb-3">
                     <Zap className="text-purple-600 dark:text-purple-400" size={20} />
                   </div>
-                  <h3 className="font-semibold text-gray-900 dark:text-white mb-2">
+                  <h3 className="font-semibold text-gray-900 dark:text-white mb-2 text-sm md:text-base">
                     BPM + Key First
                   </h3>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                  <p className="text-xs md:text-sm text-gray-600 dark:text-gray-400">
                     Perfect Match algorithm prioritizes beatmatchable BPMs and harmonic key compatibility
                   </p>
                 </div>
 
-                <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                <div className="bg-white dark:bg-gray-800 rounded-xl p-4 md:p-6 border border-gray-200 dark:border-gray-700">
                   <div className="w-10 h-10 bg-pink-100 dark:bg-pink-900/30 rounded-lg flex items-center justify-center mb-3">
                     <TrendingUp className="text-pink-600 dark:text-pink-400" size={20} />
                   </div>
-                  <h3 className="font-semibold text-gray-900 dark:text-white mb-2">
+                  <h3 className="font-semibold text-gray-900 dark:text-white mb-2 text-sm md:text-base">
                     DJ-Focused Scoring
                   </h3>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                  <p className="text-xs md:text-sm text-gray-600 dark:text-gray-400">
                     Match badges, pitch adjustment %, harmonic tiers, and mix difficulty ratings
                   </p>
                 </div>
 
-                <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                <div className="bg-white dark:bg-gray-800 rounded-xl p-4 md:p-6 border border-gray-200 dark:border-gray-700">
                   <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center mb-3">
                     <Clock className="text-blue-600 dark:text-blue-400" size={20} />
                   </div>
-                  <h3 className="font-semibold text-gray-900 dark:text-white mb-2">
+                  <h3 className="font-semibold text-gray-900 dark:text-white mb-2 text-sm md:text-base">
                     Lightning Fast
                   </h3>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                  <p className="text-xs md:text-sm text-gray-600 dark:text-gray-400">
                     {optimizationStats.speedup.toFixed(1)}x faster than traditional algorithms. Scales to hundreds of tracks.
                   </p>
                 </div>
@@ -507,12 +508,12 @@ export function DiscoverTab({
               )}
 
               {/* Results Header */}
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div>
-                  <h3 className="text-xl font-bold text-gray-900 dark:text-white">
+                  <h3 className="text-lg md:text-xl font-bold text-gray-900 dark:text-white">
                     Mashup Candidates
                   </h3>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                  <p className="text-xs md:text-sm text-gray-600 dark:text-gray-400 mt-1">
                     {sortedMashups.length} {qualityFilter !== 'all' ? qualityFilter : ''} combination
                     {sortedMashups.length !== 1 ? 's' : ''} found
                     {showMixReadyOnly && <span className="text-green-600 dark:text-green-400"> • Mix-Ready Only</span>}
@@ -528,7 +529,7 @@ export function DiscoverTab({
                 <button
                   onClick={handleCalculateMashups}
                   disabled={isCalculating}
-                  className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium text-sm inline-flex items-center gap-2"
+                  className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium text-sm inline-flex items-center gap-2 self-start sm:self-auto"
                 >
                   {isCalculating ? (
                     <>
