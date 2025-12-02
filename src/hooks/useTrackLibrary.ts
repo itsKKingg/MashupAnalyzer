@@ -36,12 +36,44 @@ const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
   bpmTolerance: 'normal', // ✅ NEW
 };
 
+
+// ============================================================================
+// ENVIRONMENT DETECTION & TIMEOUTS
+// ============================================================================
+
+function detectEnvironment(): 'local' | 'deployed' | 'unknown' {
+  const hostname = window.location.hostname;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'local';
+  } else if (hostname.includes('vercel.app') || hostname.includes('netlify.app') || 
+             hostname.includes('github.io') || hostname.includes('pages.dev')) {
+    return 'deployed';
+  }
+  return 'unknown';
+}
+
+function getAnalysisTimeout(fileSize: number): number {
+  const environment = detectEnvironment();
+  
+  // Base timeouts by environment (in milliseconds)
+  const BASE_TIMEOUT = environment === 'deployed' ? 300000 : 120000; // 5 min deployed, 2 min local
+  
+  // Dynamic adjustment based on file size
+  // Add 30 seconds per 10MB for large files
+  const SIZE_MB = fileSize / (1024 * 1024);
+  const SIZE_BONUS = SIZE_MB > 10 ? Math.floor((SIZE_MB - 10) / 10) * 30000 : 0;
+  
+  const timeout = BASE_TIMEOUT + SIZE_BONUS;
+  
+  // Cap at 10 minutes to avoid waiting forever
+  return Math.min(timeout, 600000);
+}
+
 const CONFIG = {
   DEBUG: false,
   LOG_INTERVAL: 10,
   MEMORY_LOG_INTERVAL: 60000,
   FORCE_CONCURRENCY: 4,
-  ANALYSIS_TIMEOUT: 120000,
 };
 
 function ensureTrackProperties(track: Partial<Track>): Track {
@@ -309,6 +341,10 @@ export function useTrackLibrary() {
     const modeLabel = analysisPreferences.mode === 'quick' ? 'Quick' :
                      analysisPreferences.mode === 'high-precision' ? 'High-Precision' : 'Full';
     console.log(`\n📦 Analyzing ${validFiles.length} files (${modeLabel} mode)`);
+    const environment = detectEnvironment();
+    const avgFileSize = validFiles.reduce((sum, f) => sum + f.size, 0) / validFiles.length;
+    const estimatedTimeout = getAnalysisTimeout(avgFileSize);
+    console.log(`🌍 Environment: ${environment.toUpperCase()} | Timeout: ${(estimatedTimeout / 1000).toFixed(0)}s per file`);
     setIsProcessing(true);
 
     const newTracks: Track[] = validFiles.map((file) => {
@@ -366,6 +402,15 @@ export function useTrackLibrary() {
       }
 
       try {
+        const fileSize = file.size;
+        const timeoutMs = getAnalysisTimeout(fileSize);
+        const analysisStartTime = performance.now();
+        
+        if (CONFIG.DEBUG || completedCount === 0) {
+          const env = detectEnvironment();
+          console.log(`⏱️ [${file.name}] Timeout: ${(timeoutMs / 1000).toFixed(0)}s (${env}, ${(fileSize / (1024 * 1024)).toFixed(1)}MB)`);
+        }
+
         const analysisPromise = analyzeAudioFile(
           track.file,
           (progress, status) => {
@@ -379,10 +424,19 @@ export function useTrackLibrary() {
         );
 
         const timeoutPromise = new Promise<null>((_, reject) => {
-          setTimeout(() => reject(new Error('Analysis timeout')), CONFIG.ANALYSIS_TIMEOUT);
+          setTimeout(() => {
+            const elapsed = ((performance.now() - analysisStartTime) / 1000).toFixed(1);
+            reject(new Error(`Analysis timeout after ${elapsed}s (limit: ${(timeoutMs / 1000).toFixed(0)}s)`));
+          }, timeoutMs);
         });
 
         const analysis = await Promise.race([analysisPromise, timeoutPromise]);
+        
+        // Log successful analysis time
+        const analysisTime = performance.now() - analysisStartTime;
+        if (CONFIG.DEBUG || analysisTime > timeoutMs * 0.7) {
+          console.log(`✅ [${file.name}] Completed in ${(analysisTime / 1000).toFixed(1)}s (${((analysisTime / timeoutMs) * 100).toFixed(0)}% of timeout)`);
+        }
 
         if (!analysis) {
           throw new Error('Analysis returned null');
