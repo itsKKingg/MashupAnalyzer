@@ -28,6 +28,7 @@ import { extractFolderName, extractFolderPath } from '../utils/folderUtils';
 import { UploadQueue, QueueItem } from '../utils/queueManager';
 import { terminateWorkerPool } from '../utils/workerPool';
 import { calculateMashupsOptimized, toleranceToMaxBPM } from '../utils/mashupOptimizer';
+import { isIOS } from '../utils/fileSystemUtils';
 
 const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
   mode: 'full',
@@ -365,11 +366,15 @@ export function useTrackLibrary() {
 
     const modeLabel = analysisPreferences.mode === 'quick' ? 'Quick' :
                      analysisPreferences.mode === 'high-precision' ? 'High-Precision' : 'Full';
+    const isiOSDevice = isIOS();
     console.log(`\n📦 Analyzing ${validFiles.length} files (${modeLabel} mode)`);
     const environment = detectEnvironment();
     const avgFileSize = validFiles.reduce((sum, f) => sum + f.size, 0) / validFiles.length;
     const estimatedTimeout = getAnalysisTimeout(avgFileSize);
     console.log(`🌍 Environment: ${environment.toUpperCase()} | Timeout: ${(estimatedTimeout / 1000).toFixed(0)}s per file`);
+    if (isiOSDevice) {
+      console.log(`🍎 iOS/Safari fallback mode active - using file input picker`);
+    }
     setIsProcessing(true);
 
     const newTracks: Track[] = validFiles.map((file) => {
