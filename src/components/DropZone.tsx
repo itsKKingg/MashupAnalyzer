@@ -1,8 +1,14 @@
 // src/components/DropZone.tsx
-// ✅ UPDATED: Only the scanDirectoryEntry function needs changes
+// iOS/Safari compatible folder upload with fallback picker mode
 
-import { useCallback, useState } from 'react';
-import { Upload, FolderOpen } from 'lucide-react';
+import { useCallback, useState, useEffect } from 'react';
+import { Upload, FolderOpen, Smartphone } from 'lucide-react';
+import {
+  isIOS,
+  supportsDragAndDrop,
+  processDroppedItems,
+  processFileInput,
+} from '../utils/fileSystemUtils';
 
 interface DropZoneProps {
   onFilesAdded: (files: File[]) => void;
@@ -13,29 +19,47 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 1 });
+  const [isiOSDevice, setIsiOSDevice] = useState(false);
+  const [dragSupported, setDragSupported] = useState(true);
+
+  useEffect(() => {
+    const ios = isIOS();
+    const dragOk = supportsDragAndDrop();
+    setIsiOSDevice(ios);
+    setDragSupported(dragOk);
+    
+    if (ios) {
+      console.log('🍎 iOS device detected - using fallback picker mode');
+    }
+  }, []);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
+    if (!dragSupported) return;
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(true);
-  }, []);
+  }, [dragSupported]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!dragSupported) return;
     e.preventDefault();
     e.stopPropagation();
-  }, []);
+  }, [dragSupported]);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!dragSupported) return;
     e.preventDefault();
     e.stopPropagation();
 
     if (e.currentTarget === e.target) {
       setIsDragging(false);
     }
-  }, []);
+  }, [dragSupported]);
 
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
+      if (!dragSupported) return;
+      
       e.preventDefault();
       e.stopPropagation();
       setIsDragging(false);
@@ -47,112 +71,42 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
 
       console.log('Drop detected, starting scan...');
 
-      // CRITICAL: Access DataTransfer IMMEDIATELY before any await
-      const items = e.dataTransfer?.items;
-      const files = e.dataTransfer?.files;
-
-      console.log('Items available:', items?.length || 0);
-      console.log('Files available:', files?.length || 0);
-
-      // Convert to entries array SYNCHRONOUSLY
-      const entries: any[] = [];
-      if (items && items.length > 0) {
-        for (let i = 0; i < items.length; i++) {
-          const item = items[i];
-          if (item.kind === 'file') {
-            const entry = item.webkitGetAsEntry?.();
-            if (entry) {
-              entries.push(entry);
-              console.log(
-                `Entry ${i}: ${entry.name}, isDirectory: ${entry.isDirectory}`
-              );
-            }
-          }
-        }
+      const dataTransfer = e.dataTransfer;
+      if (!dataTransfer) {
+        console.warn('No dataTransfer available');
+        return;
       }
 
-      console.log(`Captured ${entries.length} entries before async processing`);
-
-      // NOW we can go async
       setIsScanning(true);
       setScanProgress({ current: 0, total: 1 });
 
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+        const files = await processDroppedItems(dataTransfer, {
+          onProgress: (current, total) => {
+            setScanProgress({ current, total });
+          },
+          useFallback: isiOSDevice,
+        });
 
-      const allFiles: File[] = [];
+        console.log(`✅ Scan complete. Found ${files.length} valid audio files`);
 
-      if (entries.length > 0) {
-        // Process entries (supports folders)
-        console.log(`Processing ${entries.length} entries...`);
-
-        for (const entry of entries) {
-          if (entry.isDirectory) {
-            console.log('📁 Scanning folder:', entry.name);
-            // ✅ Pass the root folder name as the base path
-            const folderFiles = await scanDirectoryEntry(
-              entry,
-              entry.name, // ✅ NEW: Pass folder name as base path
-              (current, total) => {
-                setScanProgress({ current, total });
-              }
-            );
-            allFiles.push(...folderFiles);
-            console.log(`✅ Found ${folderFiles.length} files in "${entry.name}"`);
-          } else if (entry.isFile) {
-            const file = await getFileFromEntry(entry);
-            if (file && isAudioFile(file)) {
-              // ✅ For individual files, set path to just the filename
-              Object.defineProperty(file, 'webkitRelativePath', {
-                value: file.name,
-                writable: false,
-                configurable: true,
-              });
-              allFiles.push(file);
-            }
-          }
+        if (files.length > 0) {
+          onFilesAdded(files);
+        } else {
+          console.warn('No valid audio files found');
         }
-      } else if (files && files.length > 0) {
-        // Fallback: direct files only
-        console.log('Fallback: using files array');
-        const fileArray = Array.from(files).filter(isAudioFile);
-        allFiles.push(...fileArray);
-      } else {
-        console.warn('No items or files detected in drop event');
-      }
-
-      // Filter out any null/undefined values before passing
-      const validFiles = allFiles.filter((file): file is File => {
-        if (!file) {
-          console.warn('Null file detected, filtering out');
-          return false;
-        }
-        if (!(file instanceof File)) {
-          console.warn('Invalid file object, filtering out:', file);
-          return false;
-        }
-        if (!file.name || file.size === undefined) {
-          console.warn('File missing name or size, filtering out:', file);
-          return false;
-        }
-        return true;
-      });
-
-      console.log(`✅ Scan complete. Found ${validFiles.length} valid audio files`);
-
-      setIsScanning(false);
-      setScanProgress({ current: 0, total: 1 });
-
-      if (validFiles.length > 0) {
-        onFilesAdded(validFiles);
-      } else {
-        console.warn('No valid audio files found');
+      } catch (error) {
+        console.error('Error processing dropped items:', error);
+      } finally {
+        setIsScanning(false);
+        setScanProgress({ current: 0, total: 1 });
       }
     },
-    [onFilesAdded, isScanning, isProcessing]
+    [onFilesAdded, isScanning, isProcessing, dragSupported, isiOSDevice]
   );
 
   const handleFileClick = useCallback(
-    (e: React.MouseEvent) => {
+    async (e: React.MouseEvent) => {
       e.stopPropagation();
 
       if (isProcessing || isScanning) return;
@@ -162,15 +116,34 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
       input.multiple = true;
       input.accept = 'audio/*';
 
-      input.onchange = (event: Event) => {
+      input.onchange = async (event: Event) => {
         const target = event.target as HTMLInputElement;
-        const files = target.files ? Array.from(target.files) : [];
-        const audioFiles = files.filter((f): f is File => 
-          f !== null && f !== undefined && isAudioFile(f)
-        );
+        const files = target.files;
+        
+        if (!files || files.length === 0) return;
 
-        if (audioFiles.length > 0) {
-          onFilesAdded(audioFiles);
+        console.log(`📁 File input: ${files.length} files selected`);
+        
+        setIsScanning(true);
+        setScanProgress({ current: 0, total: files.length });
+
+        try {
+          const audioFiles = await processFileInput(files, {
+            onProgress: (current, total) => {
+              setScanProgress({ current, total });
+            },
+          });
+
+          console.log(`✅ Found ${audioFiles.length} audio files`);
+
+          if (audioFiles.length > 0) {
+            onFilesAdded(audioFiles);
+          }
+        } catch (error) {
+          console.error('Error processing file input:', error);
+        } finally {
+          setIsScanning(false);
+          setScanProgress({ current: 0, total: 1 });
         }
       };
 
@@ -180,7 +153,7 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
   );
 
   const handleFolderClick = useCallback(
-    (e: React.MouseEvent) => {
+    async (e: React.MouseEvent) => {
       e.stopPropagation();
 
       if (isProcessing || isScanning) return;
@@ -194,25 +167,40 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
       (input as any).webkitdirectory = true;
       (input as any).directory = true;
 
-      input.onchange = (event: Event) => {
+      input.onchange = async (event: Event) => {
         const target = event.target as HTMLInputElement;
-        const files = target.files ? Array.from(target.files) : [];
-        const audioFiles = files.filter((f): f is File => 
-          f !== null && f !== undefined && isAudioFile(f)
-        );
+        const files = target.files;
+        
+        if (!files || files.length === 0) return;
 
-        console.log(
-          `Folder selected via button: ${audioFiles.length} audio files found`
-        );
+        console.log(`📁 Folder input: ${files.length} files selected (iOS fallback: ${isiOSDevice ? 'YES' : 'NO'})`);
+        
+        setIsScanning(true);
+        setScanProgress({ current: 0, total: files.length });
 
-        if (audioFiles.length > 0) {
-          onFilesAdded(audioFiles);
+        try {
+          const audioFiles = await processFileInput(files, {
+            onProgress: (current, total) => {
+              setScanProgress({ current, total });
+            },
+          });
+
+          console.log(`✅ Found ${audioFiles.length} audio files from folder`);
+
+          if (audioFiles.length > 0) {
+            onFilesAdded(audioFiles);
+          }
+        } catch (error) {
+          console.error('Error processing folder input:', error);
+        } finally {
+          setIsScanning(false);
+          setScanProgress({ current: 0, total: 1 });
         }
       };
 
       input.click();
     },
-    [onFilesAdded, isProcessing, isScanning]
+    [onFilesAdded, isProcessing, isScanning, isiOSDevice]
   );
 
   const progressPercent = Math.round(
@@ -221,18 +209,18 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
 
   return (
     <div
-      onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      onDragEnter={dragSupported ? handleDragEnter : undefined}
+      onDragOver={dragSupported ? handleDragOver : undefined}
+      onDragLeave={dragSupported ? handleDragLeave : undefined}
+      onDrop={dragSupported ? handleDrop : undefined}
       className={`
         relative border-2 border-dashed rounded-xl p-12 text-center transition-all duration-300
         ${
-          isDragging
+          isDragging && dragSupported
             ? 'border-blue-500 dark:border-blue-400 bg-blue-50 dark:bg-blue-900/20 scale-[1.02] shadow-lg'
             : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-gray-50 dark:hover:bg-gray-700/50'
         }
-        ${isProcessing || isScanning ? 'opacity-50' : 'cursor-pointer'}
+        ${isProcessing || isScanning ? 'opacity-50' : dragSupported ? 'cursor-pointer' : ''}
       `}
     >
       {isScanning ? (
@@ -244,10 +232,9 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
           </div>
 
           <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-            Scanning Folders...
+            {isiOSDevice ? 'Processing Files...' : 'Scanning Folders...'}
           </h3>
 
-          {/* Progress Bar */}
           <div className="max-w-xs mx-auto mb-3">
             <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
@@ -265,26 +252,39 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
         // Default State
         <>
           <div className="flex items-center justify-center gap-4 mb-4">
-            <div className="p-3 bg-blue-100 dark:bg-blue-900/30 rounded-xl">
-              <Upload className="text-blue-600 dark:text-blue-400" size={32} />
-            </div>
-            <div className="p-3 bg-purple-100 dark:bg-purple-900/30 rounded-xl">
-              <FolderOpen
-                className="text-purple-600 dark:text-purple-400"
-                size={32}
-              />
-            </div>
+            {isiOSDevice ? (
+              <div className="p-3 bg-blue-100 dark:bg-blue-900/30 rounded-xl">
+                <Smartphone className="text-blue-600 dark:text-blue-400" size={32} />
+              </div>
+            ) : (
+              <>
+                <div className="p-3 bg-blue-100 dark:bg-blue-900/30 rounded-xl">
+                  <Upload className="text-blue-600 dark:text-blue-400" size={32} />
+                </div>
+                <div className="p-3 bg-purple-100 dark:bg-purple-900/30 rounded-xl">
+                  <FolderOpen
+                    className="text-purple-600 dark:text-purple-400"
+                    size={32}
+                  />
+                </div>
+              </>
+            )}
           </div>
 
           <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-            Drop files or folders here
+            {isiOSDevice 
+              ? 'Tap to choose files or folders'
+              : 'Drop files or folders here'
+            }
           </h3>
 
           <p className="text-gray-600 dark:text-gray-400 mb-4">
-            or click to browse your library
+            {isiOSDevice 
+              ? 'Use the buttons below to select your audio library'
+              : 'or click to browse your library'
+            }
           </p>
 
-          {/* Buttons */}
           <div className="flex gap-3 justify-center mb-6">
             <button
               onClick={handleFileClick}
@@ -312,155 +312,18 @@ export function DropZone({ onFilesAdded, isProcessing }: DropZoneProps) {
               </span>{' '}
               MP3, WAV, M4A, FLAC, OGG, AAC, WMA, AIFF
             </p>
-            <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-              💡 Drag & drop folders or use "Choose Folder" button to upload
-              entire folders
-            </p>
+            {isiOSDevice ? (
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
+                🍎 iOS/Safari mode: Tap "Choose Folder" to select a folder with all subfolders included
+              </p>
+            ) : (
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
+                💡 Drag & drop folders or use "Choose Folder" button to upload entire folders
+              </p>
+            )}
           </div>
         </>
       )}
     </div>
-  );
-}
-
-// ========================================
-// HELPER FUNCTIONS
-// ========================================
-
-/**
- * ✅ UPDATED: Scan directory entry recursively WITH PATH TRACKING
- */
-async function scanDirectoryEntry(
-  dirEntry: any,
-  currentPath: string, // ✅ NEW: Track the current path
-  onProgress: (current: number, total: number) => void
-): Promise<File[]> {
-  const allFiles: File[] = [];
-  const queue: Array<{ entry: any; path: string }> = [{ entry: dirEntry, path: currentPath }];
-  let processedCount = 0;
-  let totalEstimate = 1;
-
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current) continue;
-
-    const { entry, path } = current;
-
-    if (entry.isFile) {
-      try {
-        const file = await getFileFromEntry(entry);
-
-        if (file && isAudioFile(file)) {
-          // ✅ NEW: Set webkitRelativePath with the full path
-          const fullPath = `${path}/${file.name}`;
-          
-          Object.defineProperty(file, 'webkitRelativePath', {
-            value: fullPath,
-            writable: false,
-            configurable: true,
-          });
-
-          allFiles.push(file);
-          console.log('📄 Found audio file:', fullPath);
-        }
-      } catch (error) {
-        console.warn('Failed to read file entry:', entry.name, error);
-      }
-
-      processedCount++;
-      onProgress(processedCount, totalEstimate);
-
-      // Yield every 10 files
-      if (processedCount % 10 === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    } else if (entry.isDirectory) {
-      try {
-        const entries = await readDirectoryEntries(entry);
-        console.log(
-          `📁 Directory "${entry.name}" contains ${entries.length} entries`
-        );
-
-        // ✅ NEW: Add subdirectory entries with updated path
-        const subPath = `${path}/${entry.name}`;
-        queue.push(...entries.map(e => ({ entry: e, path: subPath })));
-        
-        totalEstimate += entries.length;
-        onProgress(processedCount, totalEstimate);
-      } catch (error) {
-        console.warn('Failed to read directory:', entry.name, error);
-      }
-
-      // Yield after each directory
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-  }
-
-  return allFiles;
-}
-
-/**
- * Get File from FileSystemFileEntry
- */
-function getFileFromEntry(fileEntry: any): Promise<File | null> {
-  return new Promise((resolve) => {
-    try {
-      fileEntry.file(
-        (file: File) => resolve(file),
-        (error: any) => {
-          console.error('Error reading file:', error);
-          resolve(null);
-        }
-      );
-    } catch (error) {
-      console.error('Exception in getFileFromEntry:', error);
-      resolve(null);
-    }
-  });
-}
-
-/**
- * Read directory entries (handles pagination)
- */
-function readDirectoryEntries(dirEntry: any): Promise<any[]> {
-  return new Promise((resolve) => {
-    try {
-      const dirReader = dirEntry.createReader();
-      const entries: any[] = [];
-
-      const readBatch = () => {
-        dirReader.readEntries(
-          (batch: any[]) => {
-            if (batch.length === 0) {
-              resolve(entries);
-            } else {
-              entries.push(...batch);
-              readBatch(); // Continue reading (pagination)
-            }
-          },
-          (error: any) => {
-            console.error('Error reading directory:', error);
-            resolve(entries); // Return what we have
-          }
-        );
-      };
-
-      readBatch();
-    } catch (error) {
-      console.error('Exception in readDirectoryEntries:', error);
-      resolve([]);
-    }
-  });
-}
-
-/**
- * Check if file is audio
- */
-function isAudioFile(file: File): boolean {
-  if (!file || !file.name) return false;
-  
-  return (
-    file.type.startsWith('audio/') ||
-    /\.(mp3|wav|m4a|flac|ogg|aac|wma|aiff|alac)$/i.test(file.name)
   );
 }
