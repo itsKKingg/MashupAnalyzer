@@ -27,10 +27,13 @@ const CONFIG = {
 
 let essentiaInstance = null;
 let isInitialized = false;
+let wasmInitTime = 0;
 
 async function initializeEssentia() {
   if (isInitialized && essentiaInstance) return true;
 
+  const initStart = performance.now();
+  
   try {
     const EssentiaClass = (self.module).exports;
     const WASMModule = (self).exports && (self).exports.EssentiaWASM;
@@ -54,7 +57,8 @@ async function initializeEssentia() {
     
     essentiaInstance = new EssentiaClass(wasmModule);
     
-    // Silent success - no logging
+    wasmInitTime = performance.now() - initStart;
+    console.log(`[Worker] ✅ Essentia WASM initialized in ${wasmInitTime.toFixed(0)}ms`);
     isInitialized = true;
     return true;
   } catch (error) {
@@ -394,6 +398,17 @@ function createSegments(signal, sampleRate, duration, bpm, key, avgEnergy) {
 
 async function analyzeAudio(msg) {
   const { audioData, sampleRate, duration, options, id } = msg;
+  
+  // Performance profiling
+  const perfStart = performance.now();
+  const perfTimings = {
+    preprocess: 0,
+    rhythm: 0,
+    key: 0,
+    spectral: 0,
+    segments: 0,
+    total: 0,
+  };
 
   const sendProgress = (progress, status) => {
     self.postMessage({
@@ -406,25 +421,33 @@ async function analyzeAudio(msg) {
 
   try {
     sendProgress(10, 'Preprocessing...');
+    const preprocessStart = performance.now();
     const { signal, analyzedDuration } = preprocessAudio(
       audioData,
       sampleRate,
       duration,
       options.mode
     );
+    perfTimings.preprocess = performance.now() - preprocessStart;
 
     sendProgress(40, 'Detecting tempo...');
+    const rhythmStart = performance.now();
     const rhythmData = analyzeRhythm(signal, CONFIG.TARGET_SAMPLE_RATE);
+    perfTimings.rhythm = performance.now() - rhythmStart;
 
     sendProgress(60, 'Detecting key...');
+    const keyStart = performance.now();
     const keyData = analyzeKey(signal);
+    perfTimings.key = performance.now() - keyStart;
 
     sendProgress(80, 'Analyzing spectrum...');
+    const spectralStart = performance.now();
     const spectralData = analyzeSpectralFeatures(signal, CONFIG.TARGET_SAMPLE_RATE);
-
     const rhythmicFeatures = calculateRhythmicFeatures(rhythmData.beatCount || 0, duration);
+    perfTimings.spectral = performance.now() - spectralStart;
 
     sendProgress(95, 'Finalizing...');
+    const segmentsStart = performance.now();
     const segments = createSegments(
       signal,
       CONFIG.TARGET_SAMPLE_RATE,
@@ -433,6 +456,12 @@ async function analyzeAudio(msg) {
       keyData.key,
       spectralData.energy
     );
+    perfTimings.segments = performance.now() - segmentsStart;
+    
+    perfTimings.total = performance.now() - perfStart;
+
+    // Log performance breakdown
+    console.log(`[Worker] ⏱️  Analysis breakdown: preprocess=${perfTimings.preprocess.toFixed(0)}ms, rhythm=${perfTimings.rhythm.toFixed(0)}ms, key=${perfTimings.key.toFixed(0)}ms, spectral=${perfTimings.spectral.toFixed(0)}ms, total=${perfTimings.total.toFixed(0)}ms`);
 
     const result = {
       bpm: rhythmData.bpm,
@@ -449,6 +478,9 @@ async function analyzeAudio(msg) {
       segments,
       analysisMode: options.mode,
       analyzedDuration,
+      // Include performance metrics
+      performanceTimings: perfTimings,
+      wasmInitTime,
     };
 
     sendProgress(100, 'Complete!');
